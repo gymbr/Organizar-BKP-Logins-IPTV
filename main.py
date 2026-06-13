@@ -50,7 +50,7 @@ def test_single_user(user):
         if not base.startswith(('http://', 'https://')):
             base = 'http://' + base
 
-        status = "offline"
+    status = "offline"
 
     # Executa o teste caso possua todos os dados necessários
     if username and password and base:
@@ -69,6 +69,13 @@ def test_single_user(user):
 
     # Define o novo emoji com base no status atualizado
     user['name'] = f"✅ {name}" if status == "active" else f"❌ {name}"
+    
+    # Monta a URL JSON final para a tabela clicável
+    if username and password and base:
+        user['json_link'] = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
+    else:
+        user['json_link'] = ""
+        
     return user
 
 def sort_users(users_list):
@@ -84,36 +91,24 @@ def sort_users(users_list):
         name = user.get('name', '')
         
         # 1- ✅ depois ❌
-        if '✅' in name:
-            r1 = 0
-        elif '❌' in name:
-            r1 = 1
-        else:
-            r1 = 2
+        if '✅' in name: r1 = 0
+        elif '❌' in name: r1 = 1
+        else: r1 = 2
             
         # 2- 🔥 depois 💧
-        if '🔥' in name:
-            r2 = 0
-        elif '💧' in name:
-            r2 = 1
-        else:
-            r2 = 2
+        if '🔥' in name: r2 = 0
+        elif '💧' in name: r2 = 1
+        else: r2 = 2
             
         # 3- 🟢 depois 🔞
-        if '🟢' in name:
-            r3 = 0
-        elif '🔞' in name:
-            r3 = 1
-        else:
-            r3 = 2
+        if '🟢' in name: r3 = 0
+        elif '🔞' in name: r3 = 1
+        else: r3 = 2
             
         # 4- 📺 depois 📱
-        if '📺' in name:
-            r4 = 0
-        elif '📱' in name:
-            r4 = 1
-        else:
-            r4 = 2
+        if '📺' in name: r4 = 0
+        elif '📱' in name: r4 = 1
+        else: r4 = 2
             
         # 5- Ordem alfabética (case-insensitive)
         r5 = name.lower()
@@ -152,33 +147,44 @@ if uploaded_file is not None:
             # Converte para DataFrame
             df_users = pd.DataFrame(organized_users)
             
-            # Reorganiza as colunas: 'name' em primeiro e 'url' em segundo
+            # Reorganiza as colunas manualmente colocando 'json_link' estritamente por último
             cols = list(df_users.columns)
+            for c in ['name', 'url', 'json_link']:
+                if c in cols:
+                    cols.remove(c)
+            
             ordered_cols = []
-            if 'name' in cols:
+            if 'name' in df_users.columns:
                 ordered_cols.append('name')
-                cols.remove('name')
-            if 'url' in cols:
+            if 'url' in df_users.columns:
                 ordered_cols.append('url')
-                cols.remove('url')
-            ordered_cols.extend(cols)
+                
+            ordered_cols.extend(cols) # adiciona colunas dinâmicas remanescentes
+            
+            if 'json_link' in df_users.columns:
+                ordered_cols.append('json_link')
+                
             df_users = df_users[ordered_cols]
 
-            # Exibe a tabela editável e oculta as colunas 'userid' e 'type' da interface
+            # Exibe a tabela editável, define o link como clicável e bloqueia edição na coluna do Link
             edited_df = st.data_editor(
                 df_users, 
                 num_rows="dynamic", 
                 use_container_width=True,
                 column_config={
                     "userid": None,
-                    "type": None
-                }
+                    "type": None,
+                    "json_link": st.column_config.LinkColumn("Link JSON", help="URL gerada para a API do Player")
+                },
+                disabled=["json_link"]
             )
 
-            # Reconverte a tabela editada de volta para a estrutura JSON
+            # Reconverte a tabela de volta e limpa a chave temporária de exibição do JSON link
             edited_users = edited_df.to_dict(orient="records")
-            new_data = {"multi_users": edited_users}
+            for user in edited_users:
+                user.pop('json_link', None)
 
+            new_data = {"multi_users": edited_users}
             organized_content = json.dumps(new_data, indent=2, ensure_ascii=False)
 
             original_file_name, file_extension = os.path.splitext(uploaded_file.name)
@@ -192,7 +198,7 @@ if uploaded_file is not None:
             )
 
         else:
-            st.error("O arquivo `.dev` não contém a chave 'multi_users'. Por favor, verifique se o arquivo está no formato correto.")
+            st.error("O arquivo `.dev` não contém a chave 'multi_users'.")
 
     except json.JSONDecodeError:
         st.error("Erro ao decodificar o arquivo JSON. Certifique-se de que é um arquivo JSON válido.")
