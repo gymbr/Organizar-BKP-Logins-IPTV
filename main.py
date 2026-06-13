@@ -3,7 +3,6 @@ import json
 import re
 import os
 import pandas as pd
-from functools import cmp_to_key
 import requests
 import urllib3
 from urllib.parse import quote, unquote
@@ -51,7 +50,7 @@ def test_single_user(user):
         if not base.startswith(('http://', 'https://')):
             base = 'http://' + base
 
-    status = "offline"
+        status = "offline"
 
     # Executa o teste caso possua todos os dados necessários
     if username and password and base:
@@ -73,73 +72,55 @@ def test_single_user(user):
     return user
 
 def sort_users(users_list):
-    """Organiza a lista de usuários com base nas regras de ordenação."""
-    def get_emoji_sort_key(name):
-        priority_order = ['❌', '✅', '📺', '🔞', '🟢', '💧', '🔥']
-        sort_key = []
-        for emoji in name:
-            if emoji in priority_order:
-                sort_key.append(priority_order.index(emoji))
-        return tuple(sort_key)
-
-    def compare_users(user1, user2):
-        name1 = user1.get('name', '')
-        url1 = user1.get('url', '')
-        name2 = user2.get('name', '')
-        url2 = user2.get('url', '')
-
-        # Regra 1: "Teste" sempre por último
-        if name1 == 'Teste' and name2 != 'Teste':
-            return 1
-        if name1 != 'Teste' and name2 == 'Teste':
-            return -1
-
-        # Regra 2: 👎 primeiro
-        if '👎' in name1 and '👎' not in name2:
-            return -1
-        if '👎' not in name1 and '👎' in name2:
-            return 1
-
-        # Regra 2: Nomes com palavras
-        is_word_name1 = bool(re.search(r'[a-zA-ZáàâãéèêíïóôõöúüçÇÁÀÂÃÉÈÊÍÏÓÕÖÚÜ]', name1))
-        is_word_name2 = bool(re.search(r'[a-zA-ZáàâãéèêíïóôõöúüçÇÁÀÂÃÉÈÊÍÏÓÕÖÚÜ]', name2))
+    """
+    Organiza a lista de usuários com base na hierarquia estipulada:
+    1. ✅ depois ❌
+    2. 🔥 depois 💧
+    3. 🟢 depois 🔞
+    4. 📺 depois 📱
+    5. Ordem alfabética
+    """
+    def get_sort_key(user):
+        name = user.get('name', '')
         
-        if is_word_name1 and not is_word_name2:
-            return -1
-        if not is_word_name1 and is_word_name2:
-            return 1
-
-        # Comparação entre nomes com palavras
-        if is_word_name1 and is_word_name2:
-            word_match1 = re.search(r'\b(\w+)\b$', name1)
-            word1 = word_match1.group(1) if word_match1 else ""
-            word_match2 = re.search(r'\b(\w+)\b$', name2)
-            word2 = word_match2.group(1) if word_match2 else ""
+        # 1- ✅ depois ❌
+        if '✅' in name:
+            r1 = 0
+        elif '❌' in name:
+            r1 = 1
+        else:
+            r1 = 2
             
-            # Prioridade 1: Ordenar pela palavra no final do nome (Z-A)
-            if word1 != word2:
-                return -1 if word1 > word2 else 1
+        # 2- 🔥 depois 💧
+        if '🔥' in name:
+            r2 = 0
+        elif '💧' in name:
+            r2 = 1
+        else:
+            r2 = 2
             
-            # Prioridade 2: Ordenar pela sequência de emojis (prioridade definida)
-            key1 = get_emoji_sort_key(name1)
-            key2 = get_emoji_sort_key(name2)
+        # 3- 🟢 depois 🔞
+        if '🟢' in name:
+            r3 = 0
+        elif '🔞' in name:
+            r3 = 1
+        else:
+            r3 = 2
             
-            if key1 != key2:
-                return 1 if key1 > key2 else -1
+        # 4- 📺 depois 📱
+        if '📺' in name:
+            r4 = 0
+        elif '📱' in name:
+            r4 = 1
+        else:
+            r4 = 2
             
-            # Prioridade 3: URL como desempate (Z-A)
-            return -1 if url1 > url2 else 1
-
-        # Regra 4: Nomes puros de emoji
-        key1 = get_emoji_sort_key(name1)
-        key2 = get_emoji_sort_key(name2)
+        # 5- Ordem alfabética (case-insensitive)
+        r5 = name.lower()
         
-        if key1 != key2:
-            return 1 if key1 > key2 else -1
-        
-        return -1 if url1 > url2 else 1
+        return (r1, r2, r3, r4, r5)
 
-    return sorted(users_list, key=cmp_to_key(compare_users))
+    return sorted(users_list, key=get_sort_key)
 
 
 st.set_page_config(page_title="Organizador de Logins", layout="centered")
