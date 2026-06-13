@@ -2,16 +2,17 @@ import streamlit as st
 import json
 import re
 import os
+import pandas as pd
 from functools import cmp_to_key
 
 def sort_users(users_list):
     """
-    Organiza a lista de usuários com base nas regras de ordenação:
+    Organiza a lista de usuários com base das regras de ordenação:
     1. Nome com 👎.
     2. Nomes com letras/palavras, priorizando a palavra final (Z-A).
     3. Emojis na ordem inversa.
     4. Nomes "Teste" por último.
-    5. Como desempate, ordena a URL por ordem alfabética de Z até A.
+    5. Como desempate, altera a URL por ordem alfabética de Z até A.
     """
     def get_emoji_sort_key(name):
         # Define a ordem de prioridade dos emojis (da mais alta para a mais baixa)
@@ -86,8 +87,7 @@ def sort_users(users_list):
 
 
 st.set_page_config(page_title="Organizador de Logins", layout="centered")
-st.title("Organizador de Logins .dev")
-st.markdown("Faça o upload do seu arquivo de backup `.dev` para organizar a lista de logins.")
+st.subheader("Organizador de Logins .dev")
 
 uploaded_file = st.file_uploader("Escolha um arquivo .dev", type="dev")
 
@@ -102,15 +102,42 @@ if uploaded_file is not None:
             original_users = data["multi_users"]
             organized_users = sort_users(original_users)
 
-            new_data = {"multi_users": organized_users}
+            st.subheader("Lista de Usuários Organizada")
+
+            # Converte para DataFrame
+            df_users = pd.DataFrame(organized_users)
+            
+            # Reorganiza as colunas: 'name' em primeiro e 'url' em segundo
+            cols = list(df_users.columns)
+            ordered_cols = []
+            if 'name' in cols:
+                ordered_cols.append('name')
+                cols.remove('name')
+            if 'url' in cols:
+                ordered_cols.append('url')
+                cols.remove('url')
+            ordered_cols.extend(cols)  # Inclui as colunas ocultas (userid, type, etc.)
+            df_users = df_users[ordered_cols]
+
+            # Exibe a tabela editável e oculta as colunas 'userid' e 'type' da interface
+            edited_df = st.data_editor(
+                df_users, 
+                num_rows="dynamic", 
+                use_container_width=True,
+                column_config={
+                    "userid": None,
+                    "type": None
+                }
+            )
+
+            # Reconverte a tabela editada de volta para a estrutura JSON
+            edited_users = edited_df.to_dict(orient="records")
+            new_data = {"multi_users": edited_users}
 
             organized_content = json.dumps(new_data, indent=2, ensure_ascii=False)
 
             original_file_name, file_extension = os.path.splitext(uploaded_file.name)
             download_file_name = f"{original_file_name}_organized{file_extension}"
-
-            with st.expander("Clique para ver o conteúdo organizado"):
-                st.json(new_data)
 
             st.download_button(
                 label="Clique para Baixar o Arquivo Organizado",
@@ -118,8 +145,6 @@ if uploaded_file is not None:
                 file_name=download_file_name,
                 mime="application/octet-stream"
             )
-
-            st.info("Seu novo arquivo `.dev` foi gerado e está pronto para ser baixado. Você pode usá-lo para substituir o arquivo de backup original.")
 
         else:
             st.error("O arquivo `.dev` não contém a chave 'multi_users'. Por favor, verifique se o arquivo está no formato correto.")
