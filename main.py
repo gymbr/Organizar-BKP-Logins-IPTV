@@ -4,26 +4,82 @@ import re
 import os
 import pandas as pd
 from functools import cmp_to_key
+import requests
+import urllib3
+from urllib.parse import quote, unquote
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Desabilitar avisos de segurança SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Cabeçalhos para simular o navegador nas requisições de teste
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Connection": "keep-alive"
+}
+
+def test_single_user(user):
+    """Testa se o usuário está ativo ou offline via Xtream API e atualiza o emoji no nome."""
+    name = user.get('name', '')
+    url = user.get('url', '')
+
+    # Remove emoji de status antigo (✅ ou ❌) se já existir no início do nome
+    name = re.sub(r'^[✅❌]\s*', '', name)
+
+    # 1. Tenta obter usuário das chaves dedicadas ou extrai da URL se não existirem
+    username = user.get('username') or user.get('user', '')
+    if not username:
+        user_match = re.search(r"username=([^&]+)", url, re.IGNORECASE)
+        username = unquote(user_match.group(1)) if user_match else ""
+    else:
+        username = unquote(str(username))
+
+    # 2. Tenta obter a senha das chaves dedicadas ou extrai da URL se não existirem
+    password = user.get('password') or user.get('pass', '')
+    if not password:
+        pass_match = re.search(r"password=([^&]+)", url, re.IGNORECASE)
+        password = unquote(pass_match.group(1)) if pass_match else ""
+    else:
+        password = unquote(str(password))
+
+    # 3. Identifica e higieniza a URL base do servidor
+    base_match = re.search(r"(https?://[^/]+)", url)
+    base = base_match.group(1) if base_match else url
+    if base:
+        base = base.rstrip('/')
+        if not base.startswith(('http://', 'https://')):
+            base = 'http://' + base
+
+    status = "offline"
+
+    # Executa o teste caso possua todos os dados necessários
+    if username and password and base:
+        api_url = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
+        try:
+            resp = requests.get(api_url, headers=HEADERS, verify=False, timeout=12)
+            data_json = resp.json()
+            
+            # Valida se retornou a estrutura correta de login ativo
+            if isinstance(data_json, dict) and "user_info" in data_json:
+                user_status = data_json.get("user_info", {}).get("status")
+                if user_status != "Expired":
+                    status = "active"
+        except:
+            pass
+
+    # Define o novo emoji com base no status atualizado
+    user['name'] = f"✅ {name}" if status == "active" else f"❌ {name}"
+    return user
 
 def sort_users(users_list):
-    """
-    Organiza a lista de usuários com base das regras de ordenação:
-    1. Nome com 👎.
-    2. Nomes com letras/palavras, priorizando a palavra final (Z-A).
-    3. Emojis na ordem inversa.
-    4. Nomes "Teste" por último.
-    5. Como desempate, altera a URL por ordem alfabética de Z até A.
-    """
+    """Organiza a lista de usuários com base nas regras de ordenação."""
     def get_emoji_sort_key(name):
-        # Define a ordem de prioridade dos emojis (da mais alta para a mais baixa)
-        priority_order = ['❌', '📺', '🔞', '🟢', '💧', '🔥']
-        
-        # Cria a chave de ordenação com base na prioridade de cada emoji na sequência
+        priority_order = ['❌', '✅', '📺', '🔞', '🟢', '💧', '🔥']
         sort_key = []
         for emoji in name:
             if emoji in priority_order:
                 sort_key.append(priority_order.index(emoji))
-        
         return tuple(sort_key)
 
     def compare_users(user1, user2):
@@ -44,7 +100,7 @@ def sort_users(users_list):
         if '👎' not in name1 and '👎' in name2:
             return 1
 
-        # Regra 3: Nomes com palavras
+        # Regra 2: Nomes com palavras
         is_word_name1 = bool(re.search(r'[a-zA-ZáàâãéèêíïóôõöúüçÇÁÀÂÃÉÈÊÍÏÓÕÖÚÜ]', name1))
         is_word_name2 = bool(re.search(r'[a-zA-ZáàâãéèêíïóôõöúüçÇÁÀÂÃÉÈÊÍÏÓÕÖÚÜ]', name2))
         
@@ -97,10 +153,18 @@ if uploaded_file is not None:
         data = json.loads(file_content)
 
         if "multi_users" in data:
-            st.success("Arquivo lido com sucesso! Processando...")
-
             original_users = data["multi_users"]
-            organized_users = sort_users(original_users)
+
+            # Processamento em paralelo para testar o status de todos os usuários
+            with st.spinner("⚡ Testando status dos servidores de IPTV..."):
+                tested_users = []
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(test_single_user, user) for user in original_users]
+                    for future in as_completed(futures):
+                        tested_users.append(future.result())
+
+            st.success("Análise de status concluída com sucesso!")
+            organized_users = sort_users(tested_users)
 
             st.subheader("Lista de Usuários Organizada")
 
@@ -116,7 +180,7 @@ if uploaded_file is not None:
             if 'url' in cols:
                 ordered_cols.append('url')
                 cols.remove('url')
-            ordered_cols.extend(cols)  # Inclui as colunas ocultas (userid, type, etc.)
+            ordered_cols.extend(cols)
             df_users = df_users[ordered_cols]
 
             # Exibe a tabela editável e oculta as colunas 'userid' e 'type' da interface
