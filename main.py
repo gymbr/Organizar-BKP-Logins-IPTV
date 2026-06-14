@@ -224,6 +224,9 @@ if uploaded_file is not None:
 
         # Renderiza e captura edições da tabela de forma reativa
         if "df_users" in st.session_state:
+            # Exibe o título antes de renderizar a tabela
+            st.subheader("Lista Organizada")
+
             edited_df = st.data_editor(
                 st.session_state.df_users, 
                 num_rows="dynamic", 
@@ -246,8 +249,6 @@ if uploaded_file is not None:
                 # Atualiza o Session State com a nova ordem e recarrega a página
                 st.session_state.df_users = pd.DataFrame(sorted_list)
                 st.rerun()
-
-            st.subheader("Lista Organizada")
 
             # Prepara dados para o download final limpando chaves temporárias
             edited_users = st.session_state.df_users.to_dict(orient="records")
