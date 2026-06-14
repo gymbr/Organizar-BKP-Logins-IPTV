@@ -140,7 +140,7 @@ def test_single_user(user):
                         pass
 
     # Define o novo emoji com base no status atualizado
-    user['name'] = f"✅ {name}" if status == "active" else f"❌ {name}"
+    user['name'] = f"✅{name}" if status == "active" else f"❌{name}"
     user['retorno'] = retorno_code
     
     # Monta a URL JSON final para a tabela clicável
@@ -185,48 +185,47 @@ uploaded_file = st.file_uploader("Escolha um arquivo .dev", type="dev")
 
 if uploaded_file is not None:
     try:
-        file_content = uploaded_file.getvalue().decode("utf-8")
-        data = json.loads(file_content)
+        # Inicializa o estado dos dados se o arquivo acabou de ser carregado
+        file_id = f"data_{uploaded_file.name}_{uploaded_file.size}"
+        if "file_id" not in st.session_state or st.session_state.file_id != file_id:
+            file_content = uploaded_file.getvalue().decode("utf-8")
+            data = json.loads(file_content)
 
-        if "multi_users" in data:
-            original_users = data["multi_users"]
+            if "multi_users" in data:
+                with st.spinner("⚡ Testando status dos servidores de IPTV..."):
+                    tested_users = []
+                    with ThreadPoolExecutor(max_workers=10) as executor:
+                        futures = [executor.submit(test_single_user, user) for user in data["multi_users"]]
+                        for future in as_completed(futures):
+                            tested_users.append(future.result())
 
-            with st.spinner("⚡ Testando status dos servidores de IPTV..."):
-                tested_users = []
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    futures = [executor.submit(test_single_user, user) for user in original_users]
-                    for future in as_completed(futures):
-                        tested_users.append(future.result())
-
-            st.success("Análise de status concluída com sucesso!")
-            organized_users = sort_users(tested_users)
-
-            st.subheader("Lista Organizada")
-
-            df_users = pd.DataFrame(organized_users)
-            
-            cols = list(df_users.columns)
-            for c in ['name', 'retorno', 'url', 'json_link']:
-                if c in cols:
-                    cols.remove(c)
-            
-            ordered_cols = []
-            if 'name' in df_users.columns:
-                ordered_cols.append('name')
-            if 'retorno' in df_users.columns:
-                ordered_cols.append('retorno')
-            if 'url' in df_users.columns:
-                ordered_cols.append('url')
+                st.success("Análise de status concluída com sucesso!")
                 
-            ordered_cols.extend(cols)
-            
-            if 'json_link' in df_users.columns:
-                ordered_cols.append('json_link')
+                # Cria o DataFrame inicial ordenado
+                df_initial = pd.DataFrame(sort_users(tested_users))
                 
-            df_users = df_users[ordered_cols]
+                # Reorganiza as colunas
+                cols = list(df_initial.columns)
+                for c in ['name', 'retorno', 'url', 'json_link']:
+                    if c in cols: cols.remove(c)
+                
+                ordered_cols = []
+                if 'name' in df_initial.columns: ordered_cols.append('name')
+                if 'retorno' in df_initial.columns: ordered_cols.append('retorno')
+                if 'url' in df_initial.columns: ordered_cols.append('url')
+                ordered_cols.extend(cols)
+                if 'json_link' in df_initial.columns: ordered_cols.append('json_link')
+                
+                st.session_state.df_users = df_initial[ordered_cols]
+                st.session_state.file_id = file_id
+            else:
+                st.error("O arquivo `.dev` não contém a chave 'multi_users'.")
+                st.stop()
 
+        # Renderiza e captura edições da tabela de forma reativa
+        if "df_users" in st.session_state:
             edited_df = st.data_editor(
-                df_users, 
+                st.session_state.df_users, 
                 num_rows="dynamic", 
                 use_container_width=True,
                 column_config={
@@ -238,7 +237,20 @@ if uploaded_file is not None:
                 disabled=["json_link", "retorno"]
             )
 
-            edited_users = edited_df.to_dict(orient="records")
+            # Verifica se houve alguma alteração estrutural ou de valores
+            if not edited_df.equals(st.session_state.df_users):
+                # Converte o DataFrame de volta para lista de dicionários para reordenar
+                updated_list = edited_df.to_dict(orient="records")
+                sorted_list = sort_users(updated_list)
+                
+                # Atualiza o Session State com a nova ordem e recarrega a página
+                st.session_state.df_users = pd.DataFrame(sorted_list)
+                st.rerun()
+
+            st.subheader("Lista Organizada")
+
+            # Prepara dados para o download final limpando chaves temporárias
+            edited_users = st.session_state.df_users.to_dict(orient="records")
             for user in edited_users:
                 user.pop('json_link', None)
                 user.pop('retorno', None)
@@ -255,9 +267,6 @@ if uploaded_file is not None:
                 file_name=download_file_name,
                 mime="application/octet-stream"
             )
-
-        else:
-            st.error("O arquivo `.dev` não contém a chave 'multi_users'.")
 
     except json.JSONDecodeError:
         st.error("Erro ao decodificar o arquivo JSON. Certifique-se de que é um arquivo JSON válido.")
