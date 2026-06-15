@@ -231,24 +231,27 @@ def test_single_user(user, search_query=""):
         
         # 1. Processar Filmes
         if search_matches["Filmes"]:
-            for i, filme in enumerate(search_matches["Filmes"][:2]):
-                match_segments.append(filme)
+            match_segments.append("Filmes:")
+            for filme in search_matches["Filmes"][:2]:
+                match_segments.append(f"- {filme}")
             if len(search_matches["Filmes"]) > 2:
-                match_segments[-1] += f" (+{len(search_matches['Filmes']) - 2})"
+                match_segments.append(f"- (+{len(search_matches['Filmes']) - 2})")
                 
         # 2. Processar Séries
         if search_matches["Séries"]:
-            for i, serie in enumerate(search_matches["Séries"][:2]):
-                if i == 0:
-                    match_segments.append(f"Séries: {serie}")
-                else:
-                    match_segments.append(serie)
+            match_segments.append("Séries:")
+            for serie in search_matches["Séries"][:2]:
+                match_segments.append(f"- {serie}")
             if len(search_matches["Séries"]) > 2:
-                match_segments[-1] += f" (+{len(search_matches['Séries']) - 2})"
+                match_segments.append(f"- (+{len(search_matches['Séries']) - 2})")
                 
         # 3. Processar Canais
         if search_matches["Canais"]: 
-            match_segments.append(f"Canais ({len(search_matches['Canais'])})")
+            match_segments.append("Canais:")
+            for canal in search_matches["Canais"][:2]:
+                match_segments.append(f"- {canal}")
+            if len(search_matches["Canais"]) > 2:
+                match_segments.append(f"- (+{len(search_matches['Canais']) - 2})")
             
         user['Resultados Busca'] = "\n".join(match_segments) if match_segments else "Nenhum"
         user['_search_details'] = search_matches
@@ -297,6 +300,14 @@ st.set_page_config(page_title="Organizador de Logins", layout="wide")
 st.markdown(
     """
     <style>
+    /* Força quebra de linha por item em qualquer visualização expandida do Grid */
+    [class*="glideDataGrid-portal"] textarea,
+    .glideDataGrid-portal textarea {
+        white-space: pre !important;
+        word-break: initial !important;
+        overflow-wrap: initial !important;
+    }
+
     @media (max-width: 768px) {
         /* Redefine de forma absoluta a posição e largura de qualquer portal flutuante */
         [class*="glideDataGrid-portal"], .glideDataGrid-portal,
