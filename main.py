@@ -143,11 +143,13 @@ def test_single_user(user):
     user['name'] = f"✅{name}" if status == "active" else f"❌{name}"
     user['retorno'] = retorno_code
     
-    # Monta a URL JSON final para a tabela clicável
+    # Monta as URLs finais para a tabela usando a base do servidor encontrada na URL original
     if username and password and base:
         user['json_link'] = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
+        user['m3u_link'] = f"{base}/get.php?username={quote(username)}&password={quote(password)}&type=m3u_plus"
     else:
         user['json_link'] = ""
+        user['m3u_link'] = ""
         
     return user
 
@@ -206,7 +208,7 @@ if uploaded_file is not None:
                 
                 # Reorganiza as colunas
                 cols = list(df_initial.columns)
-                for c in ['name', 'retorno', 'url', 'json_link']:
+                for c in ['name', 'retorno', 'url', 'json_link', 'm3u_link']:
                     if c in cols: cols.remove(c)
                 
                 ordered_cols = []
@@ -215,6 +217,7 @@ if uploaded_file is not None:
                 if 'url' in df_initial.columns: ordered_cols.append('url')
                 ordered_cols.extend(cols)
                 if 'json_link' in df_initial.columns: ordered_cols.append('json_link')
+                if 'm3u_link' in df_initial.columns: ordered_cols.append('m3u_link')
                 
                 st.session_state.df_users = df_initial[ordered_cols]
                 st.session_state.file_id = file_id
@@ -235,9 +238,10 @@ if uploaded_file is not None:
                     "userid": None,
                     "type": None,
                     "retorno": st.column_config.TextColumn("Retorno HTTP", help="Código de status HTTP retornado pelo servidor"),
-                    "json_link": st.column_config.LinkColumn("Link JSON", help="URL gerada para a API do Player")
+                    "json_link": st.column_config.LinkColumn("Link JSON", help="URL gerada para a API do Player"),
+                    "m3u_link": st.column_config.TextColumn("Link M3U", help="Dê duplo clique na célula para selecionar e copiar o texto")
                 },
-                disabled=["json_link", "retorno"]
+                disabled=["json_link", "retorno"] # m3u_link removido daqui para permitir seleção e cópia de texto
             )
 
             # Verifica se houve alguma alteração estrutural ou de valores
@@ -255,6 +259,7 @@ if uploaded_file is not None:
             for user in edited_users:
                 user.pop('json_link', None)
                 user.pop('retorno', None)
+                user.pop('m3u_link', None)
 
             new_data = {"multi_users": edited_users}
             organized_content = json.dumps(new_data, indent=2, ensure_ascii=False)
