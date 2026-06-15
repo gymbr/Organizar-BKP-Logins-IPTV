@@ -170,55 +170,55 @@ def test_single_user(user, search_query=""):
                     except:
                         pass
 
-        if status == "active":
-            actions_url = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
-            s_norm = normalize_text(search_query) if search_query else ""
+    if status == "active":
+        actions_url = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
+        s_norm = normalize_text(search_query) if search_query else ""
 
-            actions = {
-                "Canais": "get_live_streams",
-                "Filmes": "get_vod_streams",
-                "Séries": "get_series"
-            }
+        actions = {
+            "Canais": "get_live_streams",
+            "Filmes": "get_vod_streams",
+            "Séries": "get_series"
+        }
 
-            def fetch_content_action(category, action_name):
-                url = f"{actions_url}&action={action_name}"
-                try:
-                    with requests.Session() as session:
-                        session.mount("https://", LegacySslAdapter())
-                        r = session.get(url, headers={"User-Agent": USER_AGENTS[0], "Accept": "*/*"}, verify=False, timeout=8)
-                        if r.status_code == 200:
-                            return category, r.json()
-                except:
-                    pass
-                return category, None
+        def fetch_content_action(category, action_name):
+            url = f"{actions_url}&action={action_name}"
+            try:
+                with requests.Session() as session:
+                    session.mount("https://", LegacySslAdapter())
+                    r = session.get(url, headers={"User-Agent": USER_AGENTS[0], "Accept": "*/*"}, verify=False, timeout=8)
+                    if r.status_code == 200:
+                        return category, r.json()
+            except:
+                pass
+            return category, None
 
-            with ThreadPoolExecutor(max_workers=3) as inner_executor:
-                future_to_cat = {inner_executor.submit(fetch_content_action, cat, act): cat for cat, act in actions.items()}
-                for future in as_completed(future_to_cat):
-                    cat, res_list = future.result()
-                    if isinstance(res_list, list):
-                        if cat == "Canais":
-                            live_count = len(res_list)
-                            if s_norm:
-                                search_matches["Canais"] = [i.get("name", "") for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
-                        elif cat == "Filmes":
-                            vod_count = len(res_list)
-                            if s_norm:
-                                search_matches["Filmes"] = [i.get("name", "") for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
-                        elif cat == "Séries":
-                            series_count = len(res_list)
-                            if s_norm:
-                                matched_items = [i for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
-                                if matched_items:
-                                    def fetch_detail(item):
-                                        s_id = item.get("series_id")
-                                        s_name = item.get("name", "")
-                                        info = get_series_details(base, username, password, s_id)
-                                        return f"{s_name} ({info})" if info else s_name
+        with ThreadPoolExecutor(max_workers=3) as inner_executor:
+            future_to_cat = {inner_executor.submit(fetch_content_action, cat, act): cat for cat, act in actions.items()}
+            for future in as_completed(future_to_cat):
+                cat, res_list = future.result()
+                if isinstance(res_list, list):
+                    if cat == "Canais":
+                        live_count = len(res_list)
+                        if s_norm:
+                            search_matches["Canais"] = [i.get("name", "") for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
+                    elif cat == "Filmes":
+                        vod_count = len(res_list)
+                        if s_norm:
+                            search_matches["Filmes"] = [i.get("name", "") for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
+                    elif cat == "Séries":
+                        series_count = len(res_list)
+                        if s_norm:
+                            matched_items = [i for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
+                            if matched_items:
+                                def fetch_detail(item):
+                                    s_id = item.get("series_id")
+                                    s_name = item.get("name", "")
+                                    info = get_series_details(base, username, password, s_id)
+                                    return f"{s_name} ({info})" if info else s_name
 
-                                    with ThreadPoolExecutor(max_workers=5) as series_executor:
-                                        results = list(series_executor.map(fetch_detail, matched_items[:10]))
-                                    search_matches["Séries"] = results
+                                with ThreadPoolExecutor(max_workers=5) as series_executor:
+                                    results = list(series_executor.map(fetch_detail, matched_items[:10]))
+                                search_matches["Séries"] = results
 
     user['name'] = f"✅{name}" if status == "active" else f"❌{name}"
     user['retorno'] = retorno_code
@@ -228,20 +228,29 @@ def test_single_user(user, search_query=""):
     
     if search_query:
         match_segments = []
+        
+        # 1. Processar Filmes
+        if search_matches["Filmes"]:
+            for i, filme in enumerate(search_matches["Filmes"][:2]):
+                match_segments.append(filme)
+            if len(search_matches["Filmes"]) > 2:
+                match_segments[-1] += f" (+{len(search_matches['Filmes']) - 2})"
+                
+        # 2. Processar Séries
+        if search_matches["Séries"]:
+            for i, serie in enumerate(search_matches["Séries"][:2]):
+                if i == 0:
+                    match_segments.append(f"Séries: {serie}")
+                else:
+                    match_segments.append(serie)
+            if len(search_matches["Séries"]) > 2:
+                match_segments[-1] += f" (+{len(search_matches['Séries']) - 2})"
+                
+        # 3. Processar Canais
         if search_matches["Canais"]: 
             match_segments.append(f"Canais ({len(search_matches['Canais'])})")
-        if search_matches["Filmes"]: 
-            filmes_inline = ", ".join(search_matches["Filmes"][:2])
-            if len(search_matches["Filmes"]) > 2:
-                filmes_inline += f" (+{len(search_matches['Filmes']) - 2})"
-            match_segments.append(f"Filmes: {filmes_inline}")
-        if search_matches["Séries"]: 
-            series_inline = ", ".join(search_matches["Séries"][:2])
-            if len(search_matches["Séries"]) > 2:
-                series_inline += f" (+{len(search_matches['Séries']) - 2})"
-            match_segments.append(f"Séries: {series_inline}")
             
-        user['Resultados Busca'] = " | ".join(match_segments) if match_segments else "Nenhum"
+        user['Resultados Busca'] = "\n".join(match_segments) if match_segments else "Nenhum"
         user['_search_details'] = search_matches
     else:
         user['Resultados Busca'] = "-"
@@ -283,6 +292,46 @@ def sort_users(users_list):
 
 
 st.set_page_config(page_title="Organizador de Logins", layout="wide")
+
+# CSS Avançado e Agressivo para conter portais flutuantes do Glide Data Grid no Mobile
+st.markdown(
+    """
+    <style>
+    @media (max-width: 768px) {
+        /* Redefine de forma absoluta a posição e largura de qualquer portal flutuante */
+        [class*="glideDataGrid-portal"], .glideDataGrid-portal,
+        [class*="glideDataGrid-portal"] > div, .glideDataGrid-portal > div {
+            left: 4vw !important;
+            right: 4vw !important;
+            width: 92vw !important;
+            max-width: 92vw !important;
+            box-sizing: border-box !important;
+        }
+        
+        /* Força quebra de linha obrigatória e impede estiramento horizontal do texto */
+        [class*="glideDataGrid-portal"] textarea,
+        .glideDataGrid-portal textarea,
+        [class*="glideDataGrid-portal"] *,
+        .glideDataGrid-portal * {
+            width: 100% !important;
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+            white-space: pre-wrap !important;
+            word-break: break-word !important;
+            overflow-wrap: break-word !important;
+        }
+        
+        /* Ajuste complementar para popovers e menus normais */
+        div[data-baseweb="popover"],
+        div[data-baseweb="menu"] {
+            max-width: 90vw !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 st.subheader("Organizador de Logins .dev")
 
 uploaded_file = st.file_uploader("Escolha um arquivo .dev", type="dev")
@@ -340,7 +389,7 @@ if uploaded_file is not None:
                     "Canais": st.column_config.NumberColumn("📺 Canais"),
                     "Filmes": st.column_config.NumberColumn("🎬 Filmes"),
                     "Séries": st.column_config.NumberColumn("🍿 Séries"),
-                    "Resultados Busca": st.column_config.TextColumn("🔎 Resultado Busca"),
+                    "Resultados Busca": st.column_config.TextColumn("🔎 Resultado Busca", width=300),
                     "json_link": st.column_config.LinkColumn("Link JSON"),
                     "m3u_link": st.column_config.TextColumn("Link M3U")
                 },
