@@ -28,7 +28,7 @@ class LegacySslAdapter(requests.adapters.HTTPAdapter):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         try:
-            ctx.set_ciphers('ALL:@SECLEVEL=0')  # Permite qualquer cifra e reduz nível de segurança ao mínimo
+            ctx.set_ciphers('ALL:@SECLEVEL=0')
         except:
             pass
         try:
@@ -73,10 +73,8 @@ def test_single_user(user, search_query=""):
     name = user.get('name', '')
     url = user.get('url', '')
 
-    # Remove emoji de status antigo (✅ ou ❌) se já existir no início do nome
     name = re.sub(r'^[✅❌]\s*', '', name)
 
-    # 1. Tenta obter usuário das chaves dedicadas ou extrai da URL
     username = user.get('username') or user.get('user', '')
     if not username:
         user_match = re.search(r"username=([^&]+)", url, re.IGNORECASE)
@@ -84,7 +82,6 @@ def test_single_user(user, search_query=""):
     else:
         username = unquote(str(username))
 
-    # 2. Tenta obter a senha das chaves dedicadas ou extrai da URL
     password = user.get('password') or user.get('pass', '')
     if not password:
         pass_match = re.search(r"password=([^&]+)", url, re.IGNORECASE)
@@ -92,7 +89,6 @@ def test_single_user(user, search_query=""):
     else:
         password = unquote(str(password))
 
-    # 3. Identifica e higieniza a URL base do servidor
     base_match = re.search(r"(https?://[^/]+)", url)
     base = base_match.group(1) if base_match else url
     if base:
@@ -127,7 +123,6 @@ def test_single_user(user, search_query=""):
                     "Connection": "keep-alive"
                 }
 
-                # MÉTODO 1: Requests com tratamento permissivo
                 try:
                     with requests.Session() as session:
                         session.mount("https://", LegacySslAdapter())
@@ -152,7 +147,6 @@ def test_single_user(user, search_query=""):
                 except:
                     pass
 
-                # MÉTODO 2: Fallback para urllib nativo
                 if not found_active:
                     try:
                         ssl_ctx = ssl._create_unverified_context()
@@ -176,7 +170,6 @@ def test_single_user(user, search_query=""):
                     except:
                         pass
 
-        # Se ativo, realiza a busca e contagem de conteúdo EM PARALELO
         if status == "active":
             actions_url = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
             s_norm = normalize_text(search_query) if search_query else ""
@@ -223,12 +216,10 @@ def test_single_user(user, search_query=""):
                                         info = get_series_details(base, username, password, s_id)
                                         return f"{s_name} ({info})" if info else s_name
 
-                                    # Busca detalhes dos episódios em paralelo (limite de 10 itens para evitar flood)
                                     with ThreadPoolExecutor(max_workers=5) as series_executor:
                                         results = list(series_executor.map(fetch_detail, matched_items[:10]))
                                     search_matches["Séries"] = results
 
-    # Injeta os parâmetros estruturados no dicionário do usuário
     user['name'] = f"✅{name}" if status == "active" else f"❌{name}"
     user['retorno'] = retorno_code
     user['Canais'] = live_count
@@ -237,8 +228,13 @@ def test_single_user(user, search_query=""):
     
     if search_query:
         match_segments = []
-        if search_matches["Canais"]: match_segments.append(f"Canais ({len(search_matches['Canais'])})")
-        if search_matches["Filmes"]: match_segments.append(f"Filmes ({len(search_matches['Filmes'])})")
+        if search_matches["Canais"]: 
+            match_segments.append(f"Canais ({len(search_matches['Canais'])})")
+        if search_matches["Filmes"]: 
+            filmes_inline = ", ".join(search_matches["Filmes"][:2])
+            if len(search_matches["Filmes"]) > 2:
+                filmes_inline += f" (+{len(search_matches['Filmes']) - 2})"
+            match_segments.append(f"Filmes: {filmes_inline}")
         if search_matches["Séries"]: 
             series_inline = ", ".join(search_matches["Séries"][:2])
             if len(search_matches["Séries"]) > 2:
@@ -289,7 +285,6 @@ def sort_users(users_list):
 st.set_page_config(page_title="Organizador de Logins", layout="wide")
 st.subheader("Organizador de Logins .dev")
 
-# Container de Configurações e Filtros de Busca
 uploaded_file = st.file_uploader("Escolha um arquivo .dev", type="dev")
 search_query = st.text_input("🔍 Buscar conteúdo específico nos servidores (Canais, Filmes ou Séries)", value="", key="search_query_input")
 
@@ -314,7 +309,6 @@ if uploaded_file is not None:
                 
                 df_initial = pd.DataFrame(sort_users(tested_users))
                 
-                # Configuração exata da ordem das colunas (Contadores logo após credenciais)
                 fixed_start = ['name', 'retorno', 'url', 'username', 'password', 'Canais', 'Filmes', 'Séries', 'Resultados Busca']
                 fixed_end = ['json_link', 'm3u_link']
                 
@@ -332,7 +326,6 @@ if uploaded_file is not None:
                 st.error("O arquivo `.dev` não contém a chave 'multi_users'.")
                 st.stop()
 
-        # Renderização do editor de dados reativo
         if "df_users" in st.session_state:
             st.subheader("Lista Organizada")
 
@@ -343,13 +336,13 @@ if uploaded_file is not None:
                 column_config={
                     "userid": None, "type": None, "_search_details": None,
                     "name": st.column_config.TextColumn("Nome"),
-                    "retorno": st.column_config.TextColumn("Retorno HTTP", help="Código de status HTTP retornado pelo servidor"),
-                    "Canais": st.column_config.NumberColumn("📺 Canais", help="Quantidade de canais ao vivo detectados"),
-                    "Filmes": st.column_config.NumberColumn("🎬 Filmes", help="Quantidade de filmes (VOD) detectados"),
-                    "Séries": st.column_config.NumberColumn("🍿 Séries", help="Quantidade de séries detectadas"),
-                    "Resultados Busca": st.column_config.TextColumn("🔎 Resultado Busca", help="Seções que contêm o termo pesquisado"),
+                    "retorno": st.column_config.TextColumn("Retorno HTTP"),
+                    "Canais": st.column_config.NumberColumn("📺 Canais"),
+                    "Filmes": st.column_config.NumberColumn("🎬 Filmes"),
+                    "Séries": st.column_config.NumberColumn("🍿 Séries"),
+                    "Resultados Busca": st.column_config.TextColumn("🔎 Resultado Busca"),
                     "json_link": st.column_config.LinkColumn("Link JSON"),
-                    "m3u_link": st.column_config.TextColumn("Link M3U", help="Dê duplo clique para copiar o texto")
+                    "m3u_link": st.column_config.TextColumn("Link M3U")
                 },
                 disabled=["json_link", "retorno", "Canais", "Filmes", "Séries", "Resultados Busca"]
             )
@@ -359,7 +352,6 @@ if uploaded_file is not None:
                 st.session_state.df_users = pd.DataFrame(sort_users(updated_list))
                 st.rerun()
 
-            # Limpa metadados estendidos mantendo a integridade do formato original .dev para download
             edited_users = st.session_state.df_users.to_dict(orient="records")
             for user in edited_users:
                 user.pop('json_link', None)
@@ -384,7 +376,6 @@ if uploaded_file is not None:
                 mime="application/octet-stream"
             )
 
-            # Exibição detalhada dos títulos específicos encontrados pela busca
             if search_query and '_search_details' in st.session_state.df_users.columns:
                 st.markdown("### 🍿 Detalhes dos Itens Encontrados")
                 encontrou_algo = False
