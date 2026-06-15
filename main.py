@@ -44,6 +44,30 @@ def normalize_text(text):
     text = text.lower()
     return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('utf-8')
 
+def get_series_details(base_url, username, password, series_id):
+    """Busca informações da série para identificar a última temporada e o último episódio."""
+    try:
+        url = f"{base_url}/player_api.php?username={quote(username)}&password={quote(password)}&action=get_series_info&series_id={series_id}"
+        with requests.Session() as session:
+            session.mount("https://", LegacySslAdapter())
+            resp = session.get(url, headers={"User-Agent": USER_AGENTS[0], "Accept": "*/*"}, verify=False, timeout=4)
+            if resp.status_code == 200:
+                data = resp.json()
+                episodes = data.get("episodes", {})
+                if not episodes: return None
+                valid_seasons = [int(k) for k in episodes.keys() if k.isdigit()]
+                if not valid_seasons: return None
+                last_season_num = max(valid_seasons)
+                last_ep_list = episodes[str(last_season_num)]
+                if not last_ep_list: return None
+                last_episode = last_ep_list[-1]
+                title = last_episode.get("title", "")
+                match = re.search(r"S(\d+)E(\d+)", title, re.IGNORECASE)
+                return match.group(0).upper() if match else f"S{last_season_num:02d}E{len(last_ep_list):02d}"
+    except:
+        pass
+    return None
+
 def test_single_user(user, search_query=""):
     """Testa status do usuário e coleta estatísticas de conteúdo em paralelo."""
     name = user.get('name', '')
@@ -88,7 +112,7 @@ def test_single_user(user, search_query=""):
         if api_url.startswith("https://"):
             urls_to_test.append(api_url.replace("https://", "http://", 1))
         elif api_url.startswith("http://"):
-            urls_to_test.append(api_url.replace("https://", "http://", 1))
+            urls_to_test.append(api_url.replace("http://", "https://", 1))
 
         found_active = False
 
@@ -121,14 +145,14 @@ def test_single_user(user, search_query=""):
                             break
                 except requests.exceptions.Timeout:
                     retorno_code = "Timeout"
-                    break  # Se deu timeout, o servidor está inacessível. Não gaste tempo testando outros User-Agents.
+                    break
                 except requests.exceptions.ConnectionError:
                     retorno_code = "Erro Conexão"
-                    break  # Fora do ar. Corta o laço de User-Agents imediatamente.
+                    break
                 except:
                     pass
 
-                # MÉTODO 2: Fallback para urllib nativo (apenas se requests falhar por outro motivo)
+                # MÉTODO 2: Fallback para urllib nativo
                 if not found_active:
                     try:
                         ssl_ctx = ssl._create_unverified_context()
@@ -152,7 +176,7 @@ def test_single_user(user, search_query=""):
                     except:
                         pass
 
-        # Se ativo, realiza a busca e contagem de conteúdo EM PARALELO (Otimização interna)
+        # Se ativo, realiza a busca e contagem de conteúdo EM PARALELO
         if status == "active":
             actions_url = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
             s_norm = normalize_text(search_query) if search_query else ""
@@ -175,7 +199,6 @@ def test_single_user(user, search_query=""):
                     pass
                 return category, None
 
-            # Dispara as 3 requisições HTTP do mesmo servidor de forma paralela
             with ThreadPoolExecutor(max_workers=3) as inner_executor:
                 future_to_cat = {inner_executor.submit(fetch_content_action, cat, act): cat for cat, act in actions.items()}
                 for future in as_completed(future_to_cat):
@@ -192,7 +215,18 @@ def test_single_user(user, search_query=""):
                         elif cat == "Séries":
                             series_count = len(res_list)
                             if s_norm:
-                                search_matches["Séries"] = [i.get("name", "") for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
+                                matched_items = [i for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
+                                if matched_items:
+                                    def fetch_detail(item):
+                                        s_id = item.get("series_id")
+                                        s_name = item.get("name", "")
+                                        info = get_series_details(base, username, password, s_id)
+                                        return f"{s_name} ({info})" if info else s_name
+
+                                    # Busca detalhes dos episódios em paralelo (limite de 10 itens para evitar flood)
+                                    with ThreadPoolExecutor(max_workers=5) as series_executor:
+                                        results = list(series_executor.map(fetch_detail, matched_items[:10]))
+                                    search_matches["Séries"] = results
 
     # Injeta os parâmetros estruturados no dicionário do usuário
     user['name'] = f"✅{name}" if status == "active" else f"❌{name}"
@@ -205,7 +239,12 @@ def test_single_user(user, search_query=""):
         match_segments = []
         if search_matches["Canais"]: match_segments.append(f"Canais ({len(search_matches['Canais'])})")
         if search_matches["Filmes"]: match_segments.append(f"Filmes ({len(search_matches['Filmes'])})")
-        if search_matches["Séries"]: match_segments.append(f"Séries ({len(search_matches['Séries'])})")
+        if search_matches["Séries"]: 
+            series_inline = ", ".join(search_matches["Séries"][:2])
+            if len(search_matches["Séries"]) > 2:
+                series_inline += f" (+{len(search_matches['Séries']) - 2})"
+            match_segments.append(f"Séries: {series_inline}")
+            
         user['Resultados Busca'] = " | ".join(match_segments) if match_segments else "Nenhum"
         user['_search_details'] = search_matches
     else:
@@ -259,7 +298,6 @@ if uploaded_file is not None:
         file_id = f"data_{uploaded_file.name}_{uploaded_file.size}_{search_query}"
         btn_update = st.button("🚀 Testar / Atualizar Todos os Logins")
         
-        # Só reprocessa se for um arquivo novo, nova busca ou gatilho manual do botão
         if btn_update or "file_id" not in st.session_state or st.session_state.file_id != file_id:
             file_content = uploaded_file.getvalue().decode("utf-8")
             data = json.loads(file_content)
@@ -267,7 +305,6 @@ if uploaded_file is not None:
             if "multi_users" in data:
                 with st.spinner("⚡ Analisando credenciais e consultando acervo de mídias simultaneamente..."):
                     tested_users = []
-                    # Aumentado o max_workers global para agilizar testes concorrentes entre servidores diferentes
                     with ThreadPoolExecutor(max_workers=15) as executor:
                         futures = [executor.submit(test_single_user, user, search_query) for user in data["multi_users"]]
                         for future in as_completed(futures):
@@ -317,7 +354,6 @@ if uploaded_file is not None:
                 disabled=["json_link", "retorno", "Canais", "Filmes", "Séries", "Resultados Busca"]
             )
 
-            # Sincroniza modificações manuais de ordenação ou exclusão feitas na tabela
             if not edited_df.equals(st.session_state.df_users):
                 updated_list = edited_df.to_dict(orient="records")
                 st.session_state.df_users = pd.DataFrame(sort_users(updated_list))
