@@ -7,11 +7,19 @@ import requests
 import urllib3
 import ssl
 import urllib.request
+import unicodedata
 from urllib.parse import quote, unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Desabilitar avisos de segurança SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Configurações Globais de Rede
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "VLC/3.0.18 LibVLC/3.0.18",
+    "IPTVSmartersPlayer"
+]
 
 class LegacySslAdapter(requests.adapters.HTTPAdapter):
     """Adaptador SSL para compatibilidade máxima com cifras antigas e servidores legados."""
@@ -30,15 +38,21 @@ class LegacySslAdapter(requests.adapters.HTTPAdapter):
         kwargs['ssl_context'] = ctx
         return super(LegacySslAdapter, self).init_poolmanager(*args, **kwargs)
 
-def test_single_user(user):
-    """Testa se o usuário está ativo ou offline via Xtream API com múltiplos fallbacks de agentes e bibliotecas."""
+def normalize_text(text):
+    """Normaliza strings removendo acentos e convertendo para minúsculas para busca precisa."""
+    if not isinstance(text, str): return ""
+    text = text.lower()
+    return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('utf-8')
+
+def test_single_user(user, search_query=""):
+    """Testa status do usuário e coleta estatísticas de conteúdo em paralelo."""
     name = user.get('name', '')
     url = user.get('url', '')
 
     # Remove emoji de status antigo (✅ ou ❌) se já existir no início do nome
     name = re.sub(r'^[✅❌]\s*', '', name)
 
-    # 1. Tenta obter usuário das chaves dedicadas ou extrai da URL se não existirem
+    # 1. Tenta obter usuário das chaves dedicadas ou extrai da URL
     username = user.get('username') or user.get('user', '')
     if not username:
         user_match = re.search(r"username=([^&]+)", url, re.IGNORECASE)
@@ -46,7 +60,7 @@ def test_single_user(user):
     else:
         username = unquote(str(username))
 
-    # 2. Tenta obter a senha das chaves dedicadas ou extrai da URL se não existirem
+    # 2. Tenta obter a senha das chaves dedicadas ou extrai da URL
     password = user.get('password') or user.get('pass', '')
     if not password:
         pass_match = re.search(r"password=([^&]+)", url, re.IGNORECASE)
@@ -64,24 +78,17 @@ def test_single_user(user):
 
     status = "offline"
     retorno_code = "Erro/Timeout"
+    live_count, vod_count, series_count = 0, 0, 0
+    search_matches = {"Canais": [], "Filmes": [], "Séries": []}
 
-    # Executa o teste caso possua todos os dados necessários
     if username and password and base:
         api_url = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
         
-        # Lista de variações de protocolos para testar alternadamente
         urls_to_test = [api_url]
         if api_url.startswith("https://"):
             urls_to_test.append(api_url.replace("https://", "http://", 1))
         elif api_url.startswith("http://"):
-            urls_to_test.append(api_url.replace("http://", "https://", 1))
-
-        # Lista de User-Agents: Navegador Padrão vs Players de Mídia (frequentemente em Whitelist de WAFs)
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "VLC/3.0.18 LibVLC/3.0.18",
-            "IPTVSmartersPlayer"
-        ]
+            urls_to_test.append(api_url.replace("https://", "http://", 1))
 
         found_active = False
 
@@ -89,18 +96,18 @@ def test_single_user(user):
             if found_active:
                 break
 
-            for ua in user_agents:
+            for ua in USER_AGENTS:
                 headers = {
                     "User-Agent": ua,
                     "Accept": "*/*",
                     "Connection": "keep-alive"
                 }
 
-                # MÉTODO 1: Requests com tratamento permissivo de resposta e SSL
+                # MÉTODO 1: Requests com tratamento permissivo
                 try:
                     with requests.Session() as session:
                         session.mount("https://", LegacySslAdapter())
-                        resp = session.get(target_url, headers=headers, verify=False, timeout=10)
+                        resp = session.get(target_url, headers=headers, verify=False, timeout=4)
                         retorno_code = str(resp.status_code)
                         resp.encoding = resp.apparent_encoding
                         content = resp.text
@@ -112,10 +119,16 @@ def test_single_user(user):
                                 status = "active"
                             found_active = True
                             break
+                except requests.exceptions.Timeout:
+                    retorno_code = "Timeout"
+                    break  # Se deu timeout, o servidor está inacessível. Não gaste tempo testando outros User-Agents.
+                except requests.exceptions.ConnectionError:
+                    retorno_code = "Erro Conexão"
+                    break  # Fora do ar. Corta o laço de User-Agents imediatamente.
                 except:
                     pass
 
-                # MÉTODO 2: Fallback para urllib nativo
+                # MÉTODO 2: Fallback para urllib nativo (apenas se requests falhar por outro motivo)
                 if not found_active:
                     try:
                         ssl_ctx = ssl._create_unverified_context()
@@ -124,7 +137,7 @@ def test_single_user(user):
                         except:
                             pass
                         req = urllib.request.Request(target_url, headers=headers)
-                        with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as response:
+                        with urllib.request.urlopen(req, context=ssl_ctx, timeout=4) as response:
                             retorno_code = str(response.getcode())
                             content = response.read().decode('utf-8', errors='ignore')
                             if "user_info" in content:
@@ -139,11 +152,66 @@ def test_single_user(user):
                     except:
                         pass
 
-    # Define o novo emoji com base no status atualizado
+        # Se ativo, realiza a busca e contagem de conteúdo EM PARALELO (Otimização interna)
+        if status == "active":
+            actions_url = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
+            s_norm = normalize_text(search_query) if search_query else ""
+
+            actions = {
+                "Canais": "get_live_streams",
+                "Filmes": "get_vod_streams",
+                "Séries": "get_series"
+            }
+
+            def fetch_content_action(category, action_name):
+                url = f"{actions_url}&action={action_name}"
+                try:
+                    with requests.Session() as session:
+                        session.mount("https://", LegacySslAdapter())
+                        r = session.get(url, headers={"User-Agent": USER_AGENTS[0], "Accept": "*/*"}, verify=False, timeout=8)
+                        if r.status_code == 200:
+                            return category, r.json()
+                except:
+                    pass
+                return category, None
+
+            # Dispara as 3 requisições HTTP do mesmo servidor de forma paralela
+            with ThreadPoolExecutor(max_workers=3) as inner_executor:
+                future_to_cat = {inner_executor.submit(fetch_content_action, cat, act): cat for cat, act in actions.items()}
+                for future in as_completed(future_to_cat):
+                    cat, res_list = future.result()
+                    if isinstance(res_list, list):
+                        if cat == "Canais":
+                            live_count = len(res_list)
+                            if s_norm:
+                                search_matches["Canais"] = [i.get("name", "") for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
+                        elif cat == "Filmes":
+                            vod_count = len(res_list)
+                            if s_norm:
+                                search_matches["Filmes"] = [i.get("name", "") for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
+                        elif cat == "Séries":
+                            series_count = len(res_list)
+                            if s_norm:
+                                search_matches["Séries"] = [i.get("name", "") for i in res_list if i.get("name") and s_norm in normalize_text(i.get("name"))]
+
+    # Injeta os parâmetros estruturados no dicionário do usuário
     user['name'] = f"✅{name}" if status == "active" else f"❌{name}"
     user['retorno'] = retorno_code
+    user['Canais'] = live_count
+    user['Filmes'] = vod_count
+    user['Séries'] = series_count
     
-    # Monta as URLs finais para a tabela usando a base do servidor encontrada na URL original
+    if search_query:
+        match_segments = []
+        if search_matches["Canais"]: match_segments.append(f"Canais ({len(search_matches['Canais'])})")
+        if search_matches["Filmes"]: match_segments.append(f"Filmes ({len(search_matches['Filmes'])})")
+        if search_matches["Séries"]: match_segments.append(f"Séries ({len(search_matches['Séries'])})")
+        user['Resultados Busca'] = " | ".join(match_segments) if match_segments else "Nenhum"
+        user['_search_details'] = search_matches
+    else:
+        user['Resultados Busca'] = "-"
+        user['_search_details'] = {"Canais": [], "Filmes": [], "Séries": []}
+
     if username and password and base:
         user['json_link'] = f"{base}/player_api.php?username={quote(username)}&password={quote(password)}"
         user['m3u_link'] = f"{base}/get.php?username={quote(username)}&password={quote(password)}&type=m3u_plus"
@@ -157,7 +225,6 @@ def sort_users(users_list):
     """Organiza a lista de usuários com base na hierarquia estipulada."""
     def get_sort_key(user):
         name = user.get('name', '')
-        
         if '✅' in name: r1 = 0
         elif '❌' in name: r1 = 1
         else: r1 = 2
@@ -180,44 +247,47 @@ def sort_users(users_list):
     return sorted(users_list, key=get_sort_key)
 
 
-st.set_page_config(page_title="Organizador de Logins", layout="centered")
+st.set_page_config(page_title="Organizador de Logins", layout="wide")
 st.subheader("Organizador de Logins .dev")
 
+# Container de Configurações e Filtros de Busca
 uploaded_file = st.file_uploader("Escolha um arquivo .dev", type="dev")
+search_query = st.text_input("🔍 Buscar conteúdo específico nos servidores (Canais, Filmes ou Séries)", value="", key="search_query_input")
 
 if uploaded_file is not None:
     try:
-        # Inicializa o estado dos dados se o arquivo acabou de ser carregado
-        file_id = f"data_{uploaded_file.name}_{uploaded_file.size}"
-        if "file_id" not in st.session_state or st.session_state.file_id != file_id:
+        file_id = f"data_{uploaded_file.name}_{uploaded_file.size}_{search_query}"
+        btn_update = st.button("🚀 Testar / Atualizar Todos os Logins")
+        
+        # Só reprocessa se for um arquivo novo, nova busca ou gatilho manual do botão
+        if btn_update or "file_id" not in st.session_state or st.session_state.file_id != file_id:
             file_content = uploaded_file.getvalue().decode("utf-8")
             data = json.loads(file_content)
 
             if "multi_users" in data:
-                with st.spinner("⚡ Testando status dos servidores de IPTV..."):
+                with st.spinner("⚡ Analisando credenciais e consultando acervo de mídias simultaneamente..."):
                     tested_users = []
-                    with ThreadPoolExecutor(max_workers=10) as executor:
-                        futures = [executor.submit(test_single_user, user) for user in data["multi_users"]]
+                    # Aumentado o max_workers global para agilizar testes concorrentes entre servidores diferentes
+                    with ThreadPoolExecutor(max_workers=15) as executor:
+                        futures = [executor.submit(test_single_user, user, search_query) for user in data["multi_users"]]
                         for future in as_completed(futures):
                             tested_users.append(future.result())
 
-                st.success("Análise de status concluída com sucesso!")
+                st.success("Análise de status e conteúdo concluída com sucesso!")
                 
-                # Cria o DataFrame inicial ordenado
                 df_initial = pd.DataFrame(sort_users(tested_users))
                 
-                # Reorganiza as colunas
+                # Configuração exata da ordem das colunas (Contadores logo após credenciais)
+                fixed_start = ['name', 'retorno', 'url', 'username', 'password', 'Canais', 'Filmes', 'Séries', 'Resultados Busca']
+                fixed_end = ['json_link', 'm3u_link']
+                
                 cols = list(df_initial.columns)
-                for c in ['name', 'retorno', 'url', 'json_link', 'm3u_link']:
+                for c in fixed_start + fixed_end + ['userid', 'type', '_search_details']:
                     if c in cols: cols.remove(c)
                 
-                ordered_cols = []
-                if 'name' in df_initial.columns: ordered_cols.append('name')
-                if 'retorno' in df_initial.columns: ordered_cols.append('retorno')
-                if 'url' in df_initial.columns: ordered_cols.append('url')
+                ordered_cols = [c for c in fixed_start if c in df_initial.columns]
                 ordered_cols.extend(cols)
-                if 'json_link' in df_initial.columns: ordered_cols.append('json_link')
-                if 'm3u_link' in df_initial.columns: ordered_cols.append('m3u_link')
+                ordered_cols.extend([c for c in fixed_end if c in df_initial.columns])
                 
                 st.session_state.df_users = df_initial[ordered_cols]
                 st.session_state.file_id = file_id
@@ -225,9 +295,8 @@ if uploaded_file is not None:
                 st.error("O arquivo `.dev` não contém a chave 'multi_users'.")
                 st.stop()
 
-        # Renderiza e captura edições da tabela de forma reativa
+        # Renderização do editor de dados reativo
         if "df_users" in st.session_state:
-            # Exibe o título antes de renderizar a tabela
             st.subheader("Lista Organizada")
 
             edited_df = st.data_editor(
@@ -235,31 +304,36 @@ if uploaded_file is not None:
                 num_rows="dynamic", 
                 use_container_width=True,
                 column_config={
-                    "userid": None,
-                    "type": None,
+                    "userid": None, "type": None, "_search_details": None,
+                    "name": st.column_config.TextColumn("Nome"),
                     "retorno": st.column_config.TextColumn("Retorno HTTP", help="Código de status HTTP retornado pelo servidor"),
-                    "json_link": st.column_config.LinkColumn("Link JSON", help="URL gerada para a API do Player"),
-                    "m3u_link": st.column_config.TextColumn("Link M3U", help="Dê duplo clique na célula para selecionar e copiar o texto")
+                    "Canais": st.column_config.NumberColumn("📺 Canais", help="Quantidade de canais ao vivo detectados"),
+                    "Filmes": st.column_config.NumberColumn("🎬 Filmes", help="Quantidade de filmes (VOD) detectados"),
+                    "Séries": st.column_config.NumberColumn("🍿 Séries", help="Quantidade de séries detectadas"),
+                    "Resultados Busca": st.column_config.TextColumn("🔎 Resultado Busca", help="Seções que contêm o termo pesquisado"),
+                    "json_link": st.column_config.LinkColumn("Link JSON"),
+                    "m3u_link": st.column_config.TextColumn("Link M3U", help="Dê duplo clique para copiar o texto")
                 },
-                disabled=["json_link", "retorno"] # m3u_link removido daqui para permitir seleção e cópia de texto
+                disabled=["json_link", "retorno", "Canais", "Filmes", "Séries", "Resultados Busca"]
             )
 
-            # Verifica se houve alguma alteração estrutural ou de valores
+            # Sincroniza modificações manuais de ordenação ou exclusão feitas na tabela
             if not edited_df.equals(st.session_state.df_users):
-                # Converte o DataFrame de volta para lista de dicionários para reordenar
                 updated_list = edited_df.to_dict(orient="records")
-                sorted_list = sort_users(updated_list)
-                
-                # Atualiza o Session State com a nova ordem e recarrega a página
-                st.session_state.df_users = pd.DataFrame(sorted_list)
+                st.session_state.df_users = pd.DataFrame(sort_users(updated_list))
                 st.rerun()
 
-            # Prepara dados para o download final limpando chaves temporárias
+            # Limpa metadados estendidos mantendo a integridade do formato original .dev para download
             edited_users = st.session_state.df_users.to_dict(orient="records")
             for user in edited_users:
                 user.pop('json_link', None)
                 user.pop('retorno', None)
                 user.pop('m3u_link', None)
+                user.pop('Canais', None)
+                user.pop('Filmes', None)
+                user.pop('Séries', None)
+                user.pop('Resultados Busca', None)
+                user.pop('_search_details', None)
 
             new_data = {"multi_users": edited_users}
             organized_content = json.dumps(new_data, indent=2, ensure_ascii=False)
@@ -273,6 +347,26 @@ if uploaded_file is not None:
                 file_name=download_file_name,
                 mime="application/octet-stream"
             )
+
+            # Exibição detalhada dos títulos específicos encontrados pela busca
+            if search_query and '_search_details' in st.session_state.df_users.columns:
+                st.markdown("### 🍿 Detalhes dos Itens Encontrados")
+                encontrou_algo = False
+                
+                for _, row in st.session_state.df_users.iterrows():
+                    details = row.get('_search_details')
+                    if details and any(details.values()):
+                        encontrou_algo = True
+                        with st.expander(f"📦 {row['name']} | Usuário: {row.get('username', 'N/A')}"):
+                            for cat, matches in details.items():
+                                if matches:
+                                    st.markdown(f"**{cat}:**")
+                                    for item in matches[:15]:
+                                        st.write(f"- {item}")
+                                    if len(matches) > 15:
+                                        st.write(f"... e mais {len(matches)-15} correspondências.")
+                if not encontrou_algo:
+                    st.info(f"Nenhum título correspondente a '{search_query}' foi localizado nos servidores ativos.")
 
     except json.JSONDecodeError:
         st.error("Erro ao decodificar o arquivo JSON. Certifique-se de que é um arquivo JSON válido.")
